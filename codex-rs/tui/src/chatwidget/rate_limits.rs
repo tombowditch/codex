@@ -329,8 +329,19 @@ impl ChatWidget {
             return;
         }
         if let Some(preset) = self.lower_cost_preset() {
-            self.open_rate_limit_switch_prompt(preset);
-            self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Shown;
+            if self
+                .config
+                .notices
+                .auto_hide_rate_limit_model_nudge
+                .unwrap_or(false)
+            {
+                self.set_rate_limit_switch_prompt_hidden(true);
+                self.app_event_tx
+                    .send(AppEvent::PersistRateLimitSwitchPromptHidden);
+            } else {
+                self.open_rate_limit_switch_prompt(preset);
+                self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Shown;
+            }
         } else {
             self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
         }

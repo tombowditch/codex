@@ -3521,6 +3521,45 @@ async fn incomplete_response_emits_content_filter_error_message() -> anyhow::Res
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_overloaded_retries_until_sampling_succeeds() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = MockServer::start().await;
+
+    let responses_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse_failed(
+                "resp_overloaded_1",
+                "server_is_overloaded",
+                "Selected model is at capacity. Please try a different model.",
+            ),
+            sse_failed(
+                "resp_overloaded_2",
+                "slow_down",
+                "Selected model is at capacity. Please try a different model.",
+            ),
+            sse(vec![
+                ev_response_created("resp_success"),
+                ev_completed("resp_success"),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(2);
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("retry while the selected model is at capacity")
+        .await?;
+
+    assert_eq!(responses_mock.requests().len(), 3);
+    Ok(())
+}
+
 /// We try to avoid setting env vars in tests because std::env::set_var() is
 /// process-wide and unsafe. Though for this test, we want to simulate the
 /// presence of an environment variable that the provider will read for auth, so

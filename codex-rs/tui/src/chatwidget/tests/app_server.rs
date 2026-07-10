@@ -231,6 +231,28 @@ async fn safety_buffering_without_retry_shows_short_app_message() {
 }
 
 #[tokio::test]
+async fn safety_buffering_can_automatically_keep_waiting() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.notices.auto_keep_waiting_on_safety_buffering = Some(true);
+    let (thread_id, turn_id, _) = start_safety_buffering_test_turn(&mut chat, &mut op_rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(safety_buffering_notification(
+            thread_id,
+            turn_id,
+            Some("faster-model"),
+        )),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(rendered.contains(SAFETY_BUFFERING_HEADER_TEXT));
+    assert!(!rendered.contains("Retry with a faster model"));
+    assert!(!rendered.contains("Press enter to confirm or esc to go back"));
+    assert!(chat.can_retry_safety_buffered_turn(turn_id));
+}
+
+#[tokio::test]
 async fn safety_buffering_ignores_hidden_stale_and_historical_updates() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let (thread_id, turn_id, _) = start_safety_buffering_test_turn(&mut chat, &mut op_rx);

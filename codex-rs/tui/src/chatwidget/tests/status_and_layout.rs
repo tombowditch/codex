@@ -1156,6 +1156,30 @@ async fn rate_limit_switch_prompt_respects_hidden_notice() {
 }
 
 #[tokio::test]
+async fn rate_limit_switch_prompt_can_automatically_keep_current_model_and_hide() {
+    let (mut chat, mut rx, _) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.has_chatgpt_account = true;
+    chat.config.notices.auto_hide_rate_limit_model_nudge = Some(true);
+
+    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 95.0)));
+    chat.maybe_show_pending_rate_limit_prompt();
+
+    assert_eq!(chat.config.notices.hide_rate_limit_model_nudge, Some(true));
+    assert!(matches!(
+        chat.rate_limit_switch_prompt,
+        RateLimitSwitchPromptState::Idle
+    ));
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+    let mut persisted = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AppEvent::PersistRateLimitSwitchPromptHidden) {
+            persisted = true;
+        }
+    }
+    assert!(persisted);
+}
+
+#[tokio::test]
 async fn rate_limit_switch_prompt_defers_until_task_complete() {
     let (mut chat, _, _) = make_chatwidget_manual(Some("gpt-5")).await;
     chat.has_chatgpt_account = true;

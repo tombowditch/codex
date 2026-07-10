@@ -2038,6 +2038,14 @@
     "Notice": {
       "additionalProperties": false,
       "properties": {
+        "auto_hide_rate_limit_model_nudge": {
+          "description": "Automatically keeps the current model and permanently hides rate limit model nudges.",
+          "type": "boolean"
+        },
+        "auto_keep_waiting_on_safety_buffering": {
+          "description": "Automatically keeps waiting when safety buffering is shown instead of prompting.",
+          "type": "boolean"
+        },
         "external_config_migration_prompts": {
           "allOf": [
             {

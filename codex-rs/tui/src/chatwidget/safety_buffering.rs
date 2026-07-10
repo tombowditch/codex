@@ -148,6 +148,17 @@ impl ChatWidget {
             /*details_max_lines*/ 6,
         );
 
+        if self
+            .config
+            .notices
+            .auto_keep_waiting_on_safety_buffering
+            .unwrap_or(false)
+        {
+            self.bottom_pane
+                .dismiss_view_by_id(SAFETY_BUFFERING_PROMPT_VIEW_ID);
+            return;
+        }
+
         if !should_show_prompt {
             return;
         }
