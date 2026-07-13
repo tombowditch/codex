@@ -3,6 +3,12 @@ use anyhow::anyhow;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
+use codex_extension_api::ContextContributor;
+use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::PromptFragment;
+use codex_extension_api::PromptSlot;
+use codex_extension_api::TurnContextContributionInput;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
@@ -90,6 +96,21 @@ const GLOBAL_AGENTS_OVERRIDE_FILENAME: &str = "AGENTS.override.md";
 const NEW_GLOBAL_INSTRUCTIONS: &str = "new global instructions";
 const OLD_GLOBAL_INSTRUCTIONS: &str = "old global instructions";
 const REMOTE_V2_SUMMARY: &str = "global-instructions-remote-v2-summary";
+const MID_TURN_COMPACTION_EXTENSION_CONTEXT: &str = "mid-turn compaction extension context";
+
+struct MidTurnCompactionContextContributor;
+
+impl ContextContributor for MidTurnCompactionContextContributor {
+    fn contribute_mid_turn_compaction_context<'a>(
+        &'a self,
+        _input: TurnContextContributionInput<'a>,
+    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
+        Box::pin(std::future::ready(vec![PromptFragment::new(
+            PromptSlot::ContextualUser,
+            MID_TURN_COMPACTION_EXTENSION_CONTEXT,
+        )]))
+    }
+}
 
 pub(super) const COMPACT_WARNING_MESSAGE: &str = "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.";
 
@@ -4028,12 +4049,16 @@ async fn snapshot_request_shape_mid_turn_continuation_compaction() {
 
     let model_provider = non_openai_model_provider(&server);
 
-    let mut builder = test_codex().with_config(move |config| {
-        config.model_provider = model_provider;
-        set_test_compact_prompt(config);
-        config.model_context_window = Some(context_window);
-        config.model_auto_compact_token_limit = Some(limit);
-    });
+    let mut extension_builder = ExtensionRegistryBuilder::<Config>::new();
+    extension_builder.prompt_contributor(Arc::new(MidTurnCompactionContextContributor));
+    let mut builder = test_codex()
+        .with_extensions(Arc::new(extension_builder.build()))
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(context_window);
+            config.model_auto_compact_token_limit = Some(limit);
+        });
     let codex = builder.build(&server).await.unwrap().codex;
 
     codex
@@ -4067,6 +4092,13 @@ async fn snapshot_request_shape_mid_turn_continuation_compaction() {
         }),
         "first request should include the user message that triggers the function call"
     );
+    assert!(
+        !body_contains_text(
+            &first_turn_mock.single_request().body_json().to_string(),
+            MID_TURN_COMPACTION_EXTENSION_CONTEXT,
+        ),
+        "mid-turn compaction context should not be present before compaction"
+    );
 
     let function_call_output = auto_compact_mock
         .single_request()
@@ -4084,6 +4116,16 @@ async fn snapshot_request_shape_mid_turn_continuation_compaction() {
     assert!(
         body_contains_text(&auto_compact_body, SUMMARIZATION_PROMPT),
         "mid-turn auto compact request should include the summarization prompt after exceeding 95% (limit {limit})"
+    );
+    assert!(
+        body_contains_text(
+            &post_auto_compact_mock
+                .single_request()
+                .body_json()
+                .to_string(),
+            MID_TURN_COMPACTION_EXTENSION_CONTEXT,
+        ),
+        "post-compaction continuation should include fresh extension context"
     );
 
     insta::assert_snapshot!(

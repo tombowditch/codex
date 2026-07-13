@@ -98,6 +98,23 @@ pub trait ContextContributor: Send + Sync {
         })
     }
 
+    /// Returns fresh extension-owned context when a running turn resumes after compaction.
+    ///
+    /// Implementations should contribute only state that must be re-established immediately for
+    /// the same turn. The host inserts these fragments into replacement history after filtering
+    /// the compacted transcript, so contributors should resolve current authoritative state rather
+    /// than replaying a previously emitted fragment.
+    fn contribute_mid_turn_compaction_context<'a>(
+        &'a self,
+        input: TurnContextContributionInput<'a>,
+    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
+        Box::pin(async move {
+            let _self = self;
+            let _input = input;
+            Vec::new()
+        })
+    }
+
     fn contribute_world_state<'a>(
         &'a self,
         input: WorldStateContributionInput<'a>,

@@ -12,6 +12,7 @@ use crate::hook_runtime::run_pre_compact_hooks;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
+use crate::session::ExtensionContextContributionKind;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
@@ -75,9 +76,16 @@ pub(crate) async fn build_compaction_initial_context(
     // Return the rendered state with its items so history and its baseline stay identical.
     match initial_context_injection {
         InitialContextInjection::BeforeLastUserMessage(world_state) => {
-            let items = sess
+            let mut items = sess
                 .build_initial_context_with_world_state(turn_context, world_state.as_ref())
                 .await;
+            items.extend(
+                sess.build_extension_context_contribution_items(
+                    turn_context,
+                    ExtensionContextContributionKind::MidTurnCompaction,
+                )
+                .await,
+            );
             (items, Some(Arc::clone(world_state)))
         }
         InitialContextInjection::DoNotInject => (Vec::new(), None),

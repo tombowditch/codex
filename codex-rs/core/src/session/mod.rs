@@ -1008,6 +1008,12 @@ fn push_prompt_fragment(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ExtensionContextContributionKind {
+    Turn,
+    MidTurnCompaction,
+}
+
 impl Session {
     pub(crate) async fn app_server_client_metadata(&self) -> AppServerClientMetadata {
         let state = self.state.lock().await;
@@ -3133,27 +3139,35 @@ impl Session {
         }
     }
 
-    async fn build_turn_context_contribution_items(
+    pub(crate) async fn build_extension_context_contribution_items(
         &self,
         turn_context: &TurnContext,
+        kind: ExtensionContextContributionKind,
     ) -> Vec<ResponseItem> {
+        let context_contributors = self.services.extensions.context_contributors().to_vec();
         let mut developer_sections = Vec::new();
         let mut contextual_user_sections = Vec::new();
         let mut separate_developer_sections = Vec::new();
-        let context_contributors = self.services.extensions.context_contributors().to_vec();
-
         for contributor in &context_contributors {
-            for fragment in contributor
-                .contribute_turn_context(TurnContextContributionInput {
-                    thread_id: self.thread_id(),
-                    turn_id: turn_context.sub_id.as_str(),
-                    session_store: &self.services.session_extension_data,
-                    thread_store: &self.services.thread_extension_data,
-                    turn_store: turn_context.extension_data.as_ref(),
-                    model_context_window: turn_context.model_context_window(),
-                })
-                .await
-            {
+            let input = TurnContextContributionInput {
+                thread_id: self.thread_id(),
+                turn_id: turn_context.sub_id.as_str(),
+                session_store: &self.services.session_extension_data,
+                thread_store: &self.services.thread_extension_data,
+                turn_store: turn_context.extension_data.as_ref(),
+                model_context_window: turn_context.model_context_window(),
+            };
+            let contributed = match kind {
+                ExtensionContextContributionKind::Turn => {
+                    contributor.contribute_turn_context(input).await
+                }
+                ExtensionContextContributionKind::MidTurnCompaction => {
+                    contributor
+                        .contribute_mid_turn_compaction_context(input)
+                        .await
+                }
+            };
+            for fragment in contributed {
                 push_prompt_fragment(
                     fragment,
                     &mut developer_sections,
@@ -3639,8 +3653,11 @@ impl Session {
         };
         if !should_inject_full_context && turn_context_changed {
             context_items.extend(
-                self.build_turn_context_contribution_items(turn_context)
-                    .await,
+                self.build_extension_context_contribution_items(
+                    turn_context,
+                    ExtensionContextContributionKind::Turn,
+                )
+                .await,
             );
         }
         // A snapshot can change without producing model-visible or TurnContext updates.

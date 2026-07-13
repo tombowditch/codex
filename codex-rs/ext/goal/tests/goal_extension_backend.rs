@@ -13,6 +13,7 @@ use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::NoopTurnItemEmitter;
+use codex_extension_api::PromptFragment;
 use codex_extension_api::ThreadResumeInput;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ThreadStopInput;
@@ -22,6 +23,7 @@ use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
+use codex_extension_api::TurnContextContributionInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
@@ -720,6 +722,66 @@ async fn usage_limit_plan_turn_does_not_stop_goal() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn mid_turn_compaction_context_rehydrates_only_active_goal_turns() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime, thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    let tools = harness.tools();
+    let create_tool = tool_by_name(&tools, "create_goal");
+    create_tool
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "preserve this objective through compaction",
+                "token_budget": 10,
+            }),
+        ))
+        .await?;
+
+    let active_fragments = harness.mid_turn_compaction_context("turn-1").await;
+    assert_eq!(1, active_fragments.len());
+    let active_text = active_fragments[0].text();
+    assert!(active_text.contains("<codex_internal_context source=\"goal\">"));
+    assert!(active_text.contains("preserve this objective through compaction"));
+    assert!(active_text.contains("Continue working toward the active thread goal."));
+
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 12, /*cached_input_tokens*/ 0, /*output_tokens*/ 0,
+                /*reasoning_output_tokens*/ 0, /*total_tokens*/ 12,
+            ),
+        )
+        .await;
+    harness
+        .notify_tool_finish("turn-1", "call-progress", "test_tool")
+        .await;
+
+    let budget_limited_fragments = harness.mid_turn_compaction_context("turn-1").await;
+    assert_eq!(1, budget_limited_fragments.len());
+    assert!(
+        budget_limited_fragments[0]
+            .text()
+            .contains("The active thread goal has reached its token budget.")
+    );
+
+    harness.stop_turn("turn-1").await;
+    harness
+        .start_turn_with_mode("turn-plan", ModeKind::Plan, &TokenUsage::default())
+        .await;
+    assert_eq!(
+        Vec::<PromptFragment>::new(),
+        harness.mid_turn_compaction_context("turn-plan").await
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn usage_limit_stale_turn_does_not_stop_current_goal() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -1243,6 +1305,28 @@ impl GoalExtensionHarness {
                 })
                 .await;
         }
+    }
+
+    async fn mid_turn_compaction_context(&self, turn_id: &str) -> Vec<PromptFragment> {
+        let turn_store = ExtensionData::new(turn_id);
+        let thread_id = ThreadId::from_string(self.thread_store.level_id())
+            .expect("goal harness thread id should be valid");
+        let mut fragments = Vec::new();
+        for contributor in self.registry.context_contributors() {
+            fragments.extend(
+                contributor
+                    .contribute_mid_turn_compaction_context(TurnContextContributionInput {
+                        thread_id,
+                        turn_id,
+                        session_store: &self.session_store,
+                        thread_store: &self.thread_store,
+                        turn_store: &turn_store,
+                        model_context_window: Some(100),
+                    })
+                    .await,
+            );
+        }
+        fragments
     }
 
     async fn record_token_usage(&self, turn_id: &str, usage: &TokenUsage) {

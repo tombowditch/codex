@@ -35,22 +35,27 @@ fn parse_embedded_template(source: &'static str, template_name: &str) -> Templat
 }
 
 pub(crate) fn budget_limit_steering_item(goal: &ThreadGoal) -> ResponseItem {
-    goal_context_input_item(budget_limit_prompt(goal))
+    ContextualUserFragment::into(budget_limit_steering_fragment(goal))
+}
+
+pub(crate) fn budget_limit_steering_fragment(goal: &ThreadGoal) -> InternalModelContextFragment {
+    goal_context_fragment(budget_limit_prompt(goal))
 }
 
 pub(crate) fn objective_updated_steering_item(goal: &ThreadGoal) -> ResponseItem {
-    goal_context_input_item(objective_updated_prompt(goal))
+    ContextualUserFragment::into(goal_context_fragment(objective_updated_prompt(goal)))
 }
 
 pub(crate) fn continuation_steering_item(goal: &ThreadGoal) -> ResponseItem {
-    goal_context_input_item(continuation_prompt(goal))
+    ContextualUserFragment::into(continuation_steering_fragment(goal))
 }
 
-fn goal_context_input_item(prompt: String) -> ResponseItem {
-    ContextualUserFragment::into(InternalModelContextFragment::new(
-        InternalContextSource::from_static("goal"),
-        prompt,
-    ))
+pub(crate) fn continuation_steering_fragment(goal: &ThreadGoal) -> InternalModelContextFragment {
+    goal_context_fragment(continuation_prompt(goal))
+}
+
+fn goal_context_fragment(prompt: String) -> InternalModelContextFragment {
+    InternalModelContextFragment::new(InternalContextSource::from_static("goal"), prompt)
 }
 
 fn continuation_prompt(goal: &ThreadGoal) -> String {

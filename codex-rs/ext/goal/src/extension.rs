@@ -3,11 +3,15 @@ use std::sync::Weak;
 
 use codex_analytics::AnalyticsEventsClient;
 use codex_core::ThreadManager;
+use codex_core::context::ContextualUserFragment;
 use codex_extension_api::ConfigContributor;
+use codex_extension_api::ContextContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::PromptFragment;
+use codex_extension_api::PromptSlot;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
@@ -20,6 +24,7 @@ use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::TurnAbortInput;
+use codex_extension_api::TurnContextContributionInput;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
@@ -42,7 +47,9 @@ use crate::runtime::ActiveGoalStopReason;
 use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
+use crate::steering::budget_limit_steering_fragment;
 use crate::steering::budget_limit_steering_item;
+use crate::steering::continuation_steering_fragment;
 use crate::tool::GoalToolExecutor;
 
 #[derive(Clone, Debug)]
@@ -191,6 +198,64 @@ where
         if let Some(runtime) = goal_runtime_handle(thread_store) {
             runtime.set_enabled(enabled);
         }
+    }
+}
+
+impl<C> ContextContributor for GoalExtension<C>
+where
+    C: Send + Sync + 'static,
+{
+    fn contribute_mid_turn_compaction_context<'a>(
+        &'a self,
+        input: TurnContextContributionInput<'a>,
+    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
+        Box::pin(async move {
+            let Some(runtime) = goal_runtime_handle(input.thread_store) else {
+                return Vec::new();
+            };
+            if !runtime.is_enabled() {
+                return Vec::new();
+            }
+
+            let Ok(_goal_state_permit) = runtime.goal_state_permit().await else {
+                tracing::warn!(
+                    "failed to acquire goal state while rebuilding mid-turn compaction context"
+                );
+                return Vec::new();
+            };
+            if !runtime
+                .accounting_state()
+                .turn_is_current_active_goal(input.turn_id)
+            {
+                return Vec::new();
+            }
+
+            let goal = match self
+                .state_dbs
+                .thread_goals()
+                .get_thread_goal(input.thread_id)
+                .await
+            {
+                Ok(Some(goal)) => goal,
+                Ok(None) => return Vec::new(),
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to read goal while rebuilding mid-turn compaction context: {err}"
+                    );
+                    return Vec::new();
+                }
+            };
+            let goal = crate::tool::protocol_goal_from_state(goal);
+            let text = match goal.status {
+                ThreadGoalStatus::Active => continuation_steering_fragment(&goal).render(),
+                ThreadGoalStatus::BudgetLimited => budget_limit_steering_fragment(&goal).render(),
+                ThreadGoalStatus::Paused
+                | ThreadGoalStatus::Blocked
+                | ThreadGoalStatus::UsageLimited
+                | ThreadGoalStatus::Complete => return Vec::new(),
+            };
+            vec![PromptFragment::new(PromptSlot::ContextualUser, text)]
+        })
     }
 }
 
@@ -470,6 +535,7 @@ pub fn install_with_backend<C>(
     ));
     registry.thread_lifecycle_contributor(extension.clone());
     registry.config_contributor(extension.clone());
+    registry.prompt_contributor(extension.clone());
     registry.turn_lifecycle_contributor(extension.clone());
     registry.token_usage_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension.clone());
